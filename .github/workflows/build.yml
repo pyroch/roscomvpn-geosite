@@ -26,20 +26,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Checkout geosite builder
-        uses: actions/checkout@v6
-        with:
-          repository: v2fly/domain-list-community
-          path: community
-          fetch-depth: 1
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: community/go.mod
-          cache: true
-          cache-dependency-path: community/go.sum
-
       - name: Set tag
         if: github.ref_name == 'master'
         run: |
@@ -59,115 +45,10 @@ jobs:
               sha: context.sha
             })
 
-      - name: Build geosite.dat
-        run: |
-          set -euo pipefail
-
-          rm -rf community/data /tmp/out
-          mkdir -p community/data /tmp/out
-
-          cp -a ./data/. community/data/
-
-          pushd community >/dev/null
-          go run ./ -outputdir=/tmp/out
-          popd >/dev/null
-
-          test -s /tmp/out/dlc.dat
-          cp -f /tmp/out/dlc.dat ./geosite.dat
-
-      - name: Install Mihomo (latest stable)
-        run: |
-          set -euo pipefail
-          ARCH=$(dpkg --print-architecture)
-          LATEST_URL=$(${{ env.CURL }} https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-            | grep -oP '"browser_download_url":\s*"\K[^"]*mihomo-linux-'"$ARCH"'-[^"]*\.deb(?=")' \
-            | head -n1)
-          echo "Downloading: $LATEST_URL"
-          ${{ env.CURL }} -o /tmp/mihomo.deb "$LATEST_URL"
-          sudo dpkg -i /tmp/mihomo.deb || sudo apt-get install -f -y
-          rm -f /tmp/mihomo.deb
-
       - name: Install sing-box
         run: |
           set -euo pipefail
           ${{ env.CURL }} https://sing-box.app/install.sh | sudo -E sh -s -- --version 1.12.12
-
-      - name: Build .mrs
-        run: |
-          set -euo pipefail
-
-          work=/tmp/mihomo
-          out="$work/rulesets"
-
-          rm -rf "$work"
-          mkdir -p "$out"
-          cp -a ./data/. "$work"/
-
-          find "$work" -path "$out" -prune -o -type f -print0 |
-          while IFS= read -r -d '' f; do
-            tmp="$(mktemp)"
-            awk '
-              function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
-              {
-                gsub(/\r/,"")
-                s=$0
-
-                sub(/[ \t]*#.*/, "", s)
-                sub(/[ \t]*\/\/.*/, "", s)
-                sub(/[ \t]*@.*/, "", s)
-
-                s=trim(s)
-                gsub(/[ \t]+/, "", s)
-                s=tolower(s)
-
-                if (s == "") next
-
-                if (s ~ /^full:/) {
-                  sub(/^full:/, "", s)
-                  if (s != "") print s
-                  next
-                }
-
-                if (s ~ /^keyword:/) {
-                  sub(/^keyword:/, "", s)
-                  sub(/^\./, "", s)
-                  if (s != "") {
-                    s = "+." s
-                    sub(/\.$/, ".*", s)
-                    print s
-                  }
-                  next
-                }
-
-                if (s ~ /^domain:/) {
-                  sub(/^domain:/, "", s)
-                  sub(/^\./, "", s)
-                  if (s != "") {
-                    s = "+." s
-                    sub(/\.$/, ".*", s)
-                    print s
-                  }
-                  next
-                }
-
-                if (s ~ /^[a-z0-9_-]+:/) next
-
-                sub(/^\./, "", s)
-                if (s != "") {
-                  s = "+." s
-                  sub(/\.$/, ".*", s)
-                  print s
-                }
-              }
-            ' "$f" > "$tmp"
-
-            rel="${f#$work/}"
-            rel_noext="${rel%.*}"
-            dest="$out/${rel_noext}.mrs"
-            mkdir -p "$(dirname "$dest")"
-            mihomo convert-ruleset domain text "$tmp" "$dest"
-            rm -f "$tmp"
-          done
 
       - name: Build sing-box .srs (geosite)
         run: |
@@ -227,21 +108,14 @@ jobs:
             rm -f "$tmp_json"
           done
 
-      - name: MASTER Prepare release directory and archives
+      - name: MASTER Prepare release directory
         if: github.ref_name == 'master'
         run: |
           set -euo pipefail
           rm -rf release
-          mkdir -p release/mihomo release/sing-box
-          cp ./geosite.dat release/
-          cp -a /tmp/mihomo/rulesets/.   release/mihomo/
+          mkdir -p release/sing-box
           cp -a /tmp/sing-box/rulesets/. release/sing-box/
-          rm -f /tmp/mihomo.tar.gz /tmp/sing-box.tar.gz
-          tar -czf release/mihomo.tar.gz   -C release mihomo
-          tar -czf release/sing-box.tar.gz -C release sing-box
-          test -s release/mihomo.tar.gz
-          test -s release/sing-box.tar.gz
-          sha256sum release/geosite.dat > release/geosite.dat.sha256
+          find release/sing-box -type f -name "*.srs" -print -quit | grep -q .
 
       - name: MASTER Push to release branch and update master
         if: github.ref_name == 'master'
@@ -272,9 +146,7 @@ jobs:
           prerelease: false
           draft: false
           files: |
-            release/geosite.dat
-            release/geosite.dat.sha256
-            release/*.tar.gz
+            release/sing-box/*.srs
 
       - name: MASTER Purge CDN for release and updated master branches
         if: github.ref_name == 'master'
@@ -294,11 +166,9 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf release
-          mkdir -p release/mihomo release/sing-box
-          cp ./geosite.dat release/
-          cp -a /tmp/mihomo/rulesets/.   release/mihomo/
+          mkdir -p release/sing-box
           cp -a /tmp/sing-box/rulesets/. release/sing-box/
-          sha256sum release/geosite.dat > release/geosite.dat.sha256
+          find release/sing-box -type f -name "*.srs" -print -quit | grep -q .
 
       - name: TEST Push to test-release branch & update test branch
         if: github.ref_name == 'test'
